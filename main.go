@@ -106,6 +106,7 @@ func runServe(args []string) error {
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	accessLog := log.New(os.Stdout, "", log.LstdFlags)
 	tokens := copilot.NewManager(cfg.GitHubToken, newHTTPClient())
 
 	// Validate the credentials up front so misconfiguration surfaces immediately
@@ -117,7 +118,7 @@ func runServe(args []string) error {
 	}
 	cancel()
 
-	srv := proxy.New(tokens, logger, verbose)
+	srv := proxy.New(tokens, accessLog, logger, verbose)
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	httpServer := &http.Server{
 		Addr:              addr,

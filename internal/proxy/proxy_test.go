@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func managerWithToken(t *testing.T, token string, ok bool) *copilot.Manager {
 }
 
 func TestStatusEndpointAuthenticated(t *testing.T) {
-	srv := New(managerWithToken(t, "copilot-tok", true), log.New(io.Discard, "", 0), false)
+	srv := New(managerWithToken(t, "copilot-tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -63,8 +64,23 @@ func TestStatusEndpointAuthenticated(t *testing.T) {
 	}
 }
 
+func TestAccessLogPerRequest(t *testing.T) {
+	var buf bytes.Buffer
+	access := log.New(&buf, "", 0)
+	srv := New(managerWithToken(t, "copilot-tok", true), access, log.New(io.Discard, "", 0), false)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	srv.Handler().ServeHTTP(rec, req)
+
+	if got := buf.String(); !strings.Contains(got, "203.0.113.7 GET /healthz") {
+		t.Errorf("access log = %q, want it to contain %q", got, "203.0.113.7 GET /healthz")
+	}
+}
+
 func TestStatusEndpointUnauthenticated(t *testing.T) {
-	srv := New(managerWithToken(t, "", false), log.New(io.Discard, "", 0), false)
+	srv := New(managerWithToken(t, "", false), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 

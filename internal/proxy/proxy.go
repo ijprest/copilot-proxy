@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -25,15 +26,18 @@ const tokenKey ctxKey = 0
 type Server struct {
 	tokens  *copilot.Manager
 	proxy   *httputil.ReverseProxy
-	logger  *log.Logger
+	access  *log.Logger
+	errLog  *log.Logger
 	verbose bool
 }
 
-// New builds a proxy Server targeting the Copilot API.
-func New(tokens *copilot.Manager, logger *log.Logger, verbose bool) *Server {
+// New builds a proxy Server targeting the Copilot API. access receives one line
+// per incoming request (typically stdout); errLog receives proxy/token errors
+// (typically stderr).
+func New(tokens *copilot.Manager, access, errLog *log.Logger, verbose bool) *Server {
 	target, _ := url.Parse(copilot.CopilotBaseURL)
 
-	s := &Server{tokens: tokens, logger: logger, verbose: verbose}
+	s := &Server{tokens: tokens, access: access, errLog: errLog, verbose: verbose}
 
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -53,9 +57,9 @@ func New(tokens *copilot.Manager, logger *log.Logger, verbose bool) *Server {
 		// required for streaming (SSE) chat completions to arrive token by token.
 		FlushInterval: -1,
 		Transport:     newTransport(),
-		ErrorLog:      logger,
+		ErrorLog:      errLog,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Printf("proxy error for %s %s: %v", r.Method, r.URL.Path, err)
+			errLog.Printf("proxy error for %s %s: %v", r.Method, r.URL.Path, err)
 			writeJSONError(w, http.StatusBadGateway, "upstream request to Copilot failed: "+err.Error())
 		},
 	}
@@ -72,6 +76,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	// Log every incoming request to the access log (stdout).
+	s.access.Printf("%s %s %s", clientAddr(r), r.Method, r.URL.RequestURI())
+
 	// A friendly local status page; not forwarded upstream.
 	if r.URL.Path == "/" || r.URL.Path == "/healthz" {
 		s.handleStatus(w, r)
@@ -101,7 +108,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.tokens.Token(r.Context())
 	if err != nil {
-		s.logger.Printf("token error for %s %s: %v", r.Method, r.URL.Path, err)
+		s.errLog.Printf("token error for %s %s: %v", r.Method, r.URL.Path, err)
 		writeJSONError(w, http.StatusBadGateway, "could not obtain Copilot token: "+err.Error())
 		return
 	}
@@ -110,7 +117,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if s.verbose {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		s.proxy.ServeHTTP(sw, r.WithContext(ctx))
-		s.logger.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+		s.access.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
 		return
 	}
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
@@ -127,6 +134,14 @@ func normalizePath(p string) string {
 		return p[len("/v1"):]
 	}
 	return p
+}
+
+// clientAddr returns the request's client IP without the ephemeral port.
+func clientAddr(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func newTransport() *http.Transport {

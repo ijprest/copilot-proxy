@@ -97,7 +97,25 @@ curl http://127.0.0.1:8080/models
 | ---------------- | ----------- | ------------------------------ |
 | `-p`, `--port`   | `8080`      | Port to listen on             |
 | `--host`         | `127.0.0.1` | Interface to bind             |
-| `-v`, `--verbose`| `false`     | Log each proxied request      |
+| `-v`, `--verbose`| `false`     | Also log response status and duration per request |
+
+## Logging
+
+Every incoming request is logged to **stdout**, one line per request:
+
+```
+2026/07/08 15:44:02 127.0.0.1 POST /v1/chat/completions
+```
+
+With `-v`/`--verbose`, a completion line with the upstream status and duration
+is added after each request:
+
+```
+2026/07/08 15:44:05 POST /chat/completions -> 200 (2.13s)
+```
+
+Proxy and token errors are written to **stderr**, so you can redirect access
+logs and error logs independently.
 
 ## Configuration via environment
 
