@@ -1,0 +1,14 @@
+# Build output
+/copilot-proxy
+/copilot-proxy.exe
+*.exe
+
+# Go
+/vendor/
+*.test
+*.out
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
