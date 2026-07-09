@@ -51,6 +51,11 @@ copilot-proxy                 # listens on 127.0.0.1:8080 by default
 copilot-proxy --port 9000 -v  # custom port, verbose request logging
 ```
 
+On startup (after validating your login) the proxy queries Copilot's
+`/models` endpoint and prints the available model ids to stdout. This is a
+diagnostic to confirm which model names Copilot accepts — handy when a request
+fails with a model error.
+
 ### 3. Point your agent at it
 
 Configure your coding agent's OpenAI-compatible base URL:
@@ -117,6 +122,34 @@ is added after each request:
 Proxy and token errors are written to **stderr**, so you can redirect access
 logs and error logs independently.
 
+## Model translation
+
+Some clients name models slightly differently than Copilot does. For example,
+Claude Code sends Claude versions with a dash between the major and minor
+version (`claude-opus-4-8`), whereas Copilot uses a period (`claude-opus-4.8`).
+
+The proxy rewrites the `model` field of any JSON request body to its Copilot
+equivalent before forwarding. The mapping is hardcoded:
+
+| Client model        | Copilot model       |
+| ------------------- | ------------------- |
+| `claude-opus-4-8`   | `claude-opus-4.8`   |
+| `claude-opus-4-7`   | `claude-opus-4.7`   |
+| `claude-opus-4-6`   | `claude-opus-4.6`   |
+| `claude-opus-4-5`   | `claude-opus-4.5`   |
+| `claude-sonnet-4-6` | `claude-sonnet-4.6` |
+| `claude-sonnet-4-5` | `claude-sonnet-4.5` |
+| `claude-haiku-4-5`  | `claude-haiku-4.5`  |
+
+Models not in the table (including `claude-sonnet-5`, which is spelled the same
+on both sides) are forwarded unchanged. Each translation is logged to stdout:
+
+```
+2026/07/08 15:44:02 model "claude-opus-4-8" -> "claude-opus-4.8"
+```
+
+The list lives in `internal/models/models.go`; add entries there as needed.
+
 ## Configuration via environment
 
 Set `COPILOT_PROXY_GITHUB_TOKEN` to supply a GitHub OAuth token directly and
@@ -136,7 +169,8 @@ COPILOT_PROXY_GITHUB_TOKEN=gho_xxx copilot-proxy
 3. **Forwarding** — each incoming request is proxied to
    `api.githubcopilot.com` with `Authorization: Bearer <copilot-token>` plus the
    editor/integration headers Copilot expects. A leading `/v1` path segment is
-   stripped so OpenAI-style clients work unchanged.
+   stripped so OpenAI-style clients work unchanged, and the `model` field is
+   translated to its Copilot equivalent (see [Model translation](#model-translation)).
 
 ## Endpoints
 

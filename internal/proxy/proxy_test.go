@@ -88,3 +88,72 @@ func TestStatusEndpointUnauthenticated(t *testing.T) {
 		t.Fatalf("status code = %d, want 503", rec.Code)
 	}
 }
+
+func TestRewriteModelBody(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	out, from, to, changed := rewriteModelBody(body)
+	if !changed || from != "claude-opus-4-8" || to != "claude-opus-4.8" {
+		t.Fatalf("changed=%v from=%q to=%q", changed, from, to)
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("output not valid JSON: %v", err)
+	}
+	if obj["model"] != "claude-opus-4.8" {
+		t.Errorf("model = %v, want claude-opus-4.8", obj["model"])
+	}
+	// Unrelated fields must survive the rewrite.
+	if obj["stream"] != true {
+		t.Errorf("stream field lost: %v", obj["stream"])
+	}
+	if msgs, ok := obj["messages"].([]any); !ok || len(msgs) != 1 {
+		t.Errorf("messages field lost: %v", obj["messages"])
+	}
+}
+
+func TestRewriteModelBodyPassthrough(t *testing.T) {
+	cases := map[string][]byte{
+		"unmapped model": []byte(`{"model":"gpt-5.5"}`),
+		"no model":       []byte(`{"messages":[]}`),
+		"not JSON":       []byte(`not json at all`),
+		"JSON array":     []byte(`[1,2,3]`),
+	}
+	for name, body := range cases {
+		out, _, _, changed := rewriteModelBody(body)
+		if changed {
+			t.Errorf("%s: unexpectedly changed", name)
+		}
+		if string(out) != string(body) {
+			t.Errorf("%s: body altered: got %q want %q", name, out, body)
+		}
+	}
+}
+
+func TestMaybeTranslateModelRewritesRequest(t *testing.T) {
+	srv := New(managerWithToken(t, "tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
+
+	body := `{"model":"claude-haiku-4-5","messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.maybeTranslateModel(req)
+
+	got, _ := io.ReadAll(req.Body)
+	var obj map[string]any
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("rewritten body not valid JSON: %v", err)
+	}
+	if obj["model"] != "claude-haiku-4.5" {
+		t.Errorf("model = %v, want claude-haiku-4.5", obj["model"])
+	}
+	if req.ContentLength != int64(len(got)) {
+		t.Errorf("ContentLength = %d, want %d", req.ContentLength, len(got))
+	}
+}
+
+func TestMaybeTranslateModelSkipsGET(t *testing.T) {
+	srv := New(managerWithToken(t, "tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	srv.maybeTranslateModel(req) // must not panic on a bodyless request
+}

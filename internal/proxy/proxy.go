@@ -4,17 +4,21 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"copilot-proxy/internal/copilot"
+	"copilot-proxy/internal/models"
 )
 
 type ctxKey int
@@ -106,6 +110,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	s.maybeTranslateModel(r)
+
 	token, err := s.tokens.Token(r.Context())
 	if err != nil {
 		s.errLog.Printf("token error for %s %s: %v", r.Method, r.URL.Path, err)
@@ -121,6 +127,75 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// maxTranslateBody caps how many bytes of a request body we buffer in order to
+// rewrite the model field. Larger bodies are forwarded unchanged.
+const maxTranslateBody = 25 << 20 // 25 MiB
+
+// maybeTranslateModel rewrites the top-level "model" field of a JSON request
+// body to its Copilot equivalent. Requests without a body, non-JSON bodies,
+// bodies with no model, or bodies larger than maxTranslateBody are forwarded
+// unchanged.
+func (s *Server) maybeTranslateModel(r *http.Request) {
+	if r.Body == nil {
+		return
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+	default:
+		return
+	}
+
+	buf, err := io.ReadAll(io.LimitReader(r.Body, maxTranslateBody+1))
+	if err != nil || int64(len(buf)) > maxTranslateBody {
+		// Could not buffer the whole body safely; forward it as-is by stitching
+		// the bytes we already read back onto the remaining stream.
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+		return
+	}
+	_ = r.Body.Close()
+
+	out, from, to, changed := rewriteModelBody(buf)
+	r.Body = io.NopCloser(bytes.NewReader(out))
+	r.ContentLength = int64(len(out))
+	r.Header.Set("Content-Length", strconv.Itoa(len(out)))
+	if changed {
+		s.access.Printf("model %q -> %q", from, to)
+	}
+}
+
+// rewriteModelBody returns body with its top-level "model" field translated to
+// the Copilot equivalent. Non-object JSON, a missing model, or an unmapped
+// model results in the original bytes being returned unchanged. Only the
+// top-level object is re-encoded; all other fields are preserved verbatim.
+func rewriteModelBody(body []byte) (out []byte, from, to string, changed bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body, "", "", false
+	}
+	raw, ok := obj["model"]
+	if !ok {
+		return body, "", "", false
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil {
+		return body, "", "", false
+	}
+	mapped, ok := models.Translate(name)
+	if !ok || mapped == name {
+		return body, name, name, false
+	}
+	encoded, err := json.Marshal(mapped)
+	if err != nil {
+		return body, name, name, false
+	}
+	obj["model"] = encoded
+	rewritten, err := json.Marshal(obj)
+	if err != nil {
+		return body, name, name, false
+	}
+	return rewritten, name, mapped, true
 }
 
 // normalizePath maps OpenAI-style paths onto the Copilot API. The Copilot API
