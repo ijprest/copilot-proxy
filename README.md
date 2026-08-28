@@ -54,7 +54,8 @@ copilot-proxy --port 9000 -v  # custom port, verbose request logging
 On startup (after validating your login) the proxy queries Copilot's
 `/models` endpoint and prints the available model ids to stdout. This is a
 diagnostic to confirm which model names Copilot accepts — handy when a request
-fails with a model error.
+fails with a model error. The same startup snapshot is shown on the local
+status page at `/healthz`.
 
 ### 3. Point your agent at it
 
@@ -176,5 +177,5 @@ COPILOT_PROXY_GITHUB_TOKEN=gho_xxx copilot-proxy
 
 | Path               | Behavior                                             |
 | ------------------ | ---------------------------------------------------- |
-| `/` or `/healthz`  | Local status/health JSON (not forwarded)             |
+| `/` or `/healthz`  | Local HTML health page and startup model list        |
 | everything else    | Proxied to the Copilot API                           |

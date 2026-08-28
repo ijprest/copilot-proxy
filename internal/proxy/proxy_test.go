@@ -52,22 +52,33 @@ func managerWithToken(t *testing.T, token string, ok bool) *copilot.Manager {
 }
 
 func TestStatusEndpointAuthenticated(t *testing.T) {
-	srv := New(managerWithToken(t, "copilot-tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
+	srv := New(
+		managerWithToken(t, "copilot-tok", true),
+		log.New(io.Discard, "", 0),
+		log.New(io.Discard, "", 0),
+		false,
+		[]string{"claude-sonnet-5", "gpt-5.5"},
+	)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200", rec.Code)
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte("copilot-proxy")) {
-		t.Errorf("body = %q, missing service name", rec.Body.String())
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want HTML", got)
+	}
+	for _, want := range []string{"copilot-proxy", "Healthy", "claude-sonnet-5", "gpt-5.5", "2 total"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body missing %q", want)
+		}
 	}
 }
 
 func TestAccessLogPerRequest(t *testing.T) {
 	var buf bytes.Buffer
 	access := log.New(&buf, "", 0)
-	srv := New(managerWithToken(t, "copilot-tok", true), access, log.New(io.Discard, "", 0), false)
+	srv := New(managerWithToken(t, "copilot-tok", true), access, log.New(io.Discard, "", 0), false, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -80,12 +91,42 @@ func TestAccessLogPerRequest(t *testing.T) {
 }
 
 func TestStatusEndpointUnauthenticated(t *testing.T) {
-	srv := New(managerWithToken(t, "", false), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
+	srv := New(
+		managerWithToken(t, "", false),
+		log.New(io.Discard, "", 0),
+		log.New(io.Discard, "", 0),
+		false,
+		[]string{"gpt-5.5"},
+	)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status code = %d, want 503", rec.Code)
+	}
+	for _, want := range []string{"Unavailable", "Authentication failed", "gpt-5.5"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestStatusEndpointEscapesModelIDs(t *testing.T) {
+	srv := New(
+		managerWithToken(t, "copilot-tok", true),
+		log.New(io.Discard, "", 0),
+		log.New(io.Discard, "", 0),
+		false,
+		[]string{`<script>alert("x")</script>`},
+	)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+	if strings.Contains(rec.Body.String(), "<script>") {
+		t.Fatal("model id was not HTML-escaped")
+	}
+	if !strings.Contains(rec.Body.String(), "&lt;script&gt;") {
+		t.Error("escaped model id missing from status page")
 	}
 }
 
@@ -131,7 +172,7 @@ func TestRewriteModelBodyPassthrough(t *testing.T) {
 }
 
 func TestMaybeTranslateModelRewritesRequest(t *testing.T) {
-	srv := New(managerWithToken(t, "tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
+	srv := New(managerWithToken(t, "tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false, nil)
 
 	body := `{"model":"claude-haiku-4-5","messages":[]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -153,7 +194,7 @@ func TestMaybeTranslateModelRewritesRequest(t *testing.T) {
 }
 
 func TestMaybeTranslateModelSkipsGET(t *testing.T) {
-	srv := New(managerWithToken(t, "tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false)
+	srv := New(managerWithToken(t, "tok", true), log.New(io.Discard, "", 0), log.New(io.Discard, "", 0), false, nil)
 	req := httptest.NewRequest(http.MethodGet, "/models", nil)
 	srv.maybeTranslateModel(req) // must not panic on a bodyless request
 }

@@ -86,9 +86,10 @@ func newHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// dumpModels fetches the Copilot /models list and prints it to stdout. It is a
-// startup diagnostic: it never aborts serving, only reporting problems.
-func dumpModels(tokens *copilot.Manager) {
+// dumpModels fetches the Copilot /models list, prints it to stdout, and returns
+// the sorted model ids for the status page. It is a startup diagnostic: it
+// never aborts serving, only reporting problems.
+func dumpModels(tokens *copilot.Manager) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -98,7 +99,7 @@ func dumpModels(tokens *copilot.Manager) {
 		if len(data) > 0 {
 			fmt.Fprintln(os.Stderr, string(data))
 		}
-		return
+		return nil
 	}
 
 	fmt.Println("=== GitHub Copilot /models ===")
@@ -109,26 +110,35 @@ func dumpModels(tokens *copilot.Manager) {
 		fmt.Println(string(data))
 	}
 
-	// A concise, sorted list of model ids for quick scanning.
-	var parsed struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(data, &parsed) == nil && len(parsed.Data) > 0 {
-		ids := make([]string, 0, len(parsed.Data))
-		for _, m := range parsed.Data {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		sort.Strings(ids)
+	ids := modelIDsFromResponse(data)
+	if len(ids) > 0 {
 		fmt.Printf("=== %d model id(s) ===\n", len(ids))
 		for _, id := range ids {
 			fmt.Println("  " + id)
 		}
 	}
 	fmt.Println("==============================")
+	return ids
+}
+
+func modelIDsFromResponse(data []byte) []string {
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &parsed) != nil {
+		return nil
+	}
+
+	ids := make([]string, 0, len(parsed.Data))
+	for _, model := range parsed.Data {
+		if model.ID != "" {
+			ids = append(ids, model.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func runServe(args []string) error {
@@ -168,9 +178,9 @@ func runServe(args []string) error {
 
 	// Dump the models Copilot actually offers, so model-name mismatches are
 	// easy to diagnose before any traffic is proxied.
-	dumpModels(tokens)
+	models := dumpModels(tokens)
 
-	srv := proxy.New(tokens, accessLog, logger, verbose)
+	srv := proxy.New(tokens, accessLog, logger, verbose, models)
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	httpServer := &http.Server{
 		Addr:              addr,
